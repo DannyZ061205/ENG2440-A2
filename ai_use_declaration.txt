@@ -18,7 +18,7 @@ Parts of the submission affected:
   25011189_ENG2440_A2.ipynb, helpers/*.py, README.md, and the report (report/main.tex and the PDF).
 
 Data:
-  No dataset files were uploaded. The tool saw code outputs (including a few rows of the label tables) and the rendered figures, some of which contain radiographs.
+  No dataset files were uploaded. 
 
 Summary of my requests:
   * Gave it a prompt of my requirements and asked it to plan the work in stages, build the pipeline and structure of the notebook.
