@@ -1,0 +1,16 @@
+\begin{tabular}{lccccc}
+\toprule
+ & \multicolumn{2}{c}{before postprocessing} & \multicolumn{3}{c}{after postprocessing} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-6}
+ & mean $\pm$ SD & median & mean $\pm$ SD & median & 95\% CI of mean \\
+\midrule
+Dice $\uparrow$ & 0.883 $\pm$ 0.071 & 0.901 & 0.885 $\pm$ 0.066 & 0.901 & [0.869, 0.899] \\
+IoU $\uparrow$ & 0.796 $\pm$ 0.104 & 0.821 & 0.799 $\pm$ 0.099 & 0.821 & [0.776, 0.822] \\
+sensitivity $\uparrow$ & 0.881 $\pm$ 0.095 & 0.898 & 0.880 $\pm$ 0.095 & 0.898 & [0.857, 0.901] \\
+HD95 (mm) $\downarrow$ & 7.2 $\pm$ 7.1 & 4.4 & 7.7 $\pm$ 9.2 & 4.9 & [5.8, 10.0] \\
+empty predictions & \multicolumn{2}{c}{0} & \multicolumn{2}{c}{0} & \\
+\midrule
+$|$volume error$|$ (mL) $\downarrow$ & & & 12.7 $\pm$ 12.6 & 8.0 & \\
+$|$volume error$|$ (\%) $\downarrow$ & & & 12.9 $\pm$ 10.3 & 10.1 & \\
+\bottomrule
+\end{tabular}

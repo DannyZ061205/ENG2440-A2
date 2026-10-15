@@ -1,0 +1,11 @@
+# Conda environment for the ENG2440 Assignment 2 notebook.
+#   conda env create -f environment.yml && conda activate eng2440-a2
+# (or, without conda: python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt)
+name: eng2440-a2
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -r requirements.txt

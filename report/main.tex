@@ -1,0 +1,362 @@
+% ENG 2440 Assignment 2 report. Build: tectonic main.tex  (figures are read from ../figures/)
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2cm]{geometry}            % figures are placed at their drawn width (6.30 in), not scaled
+\usepackage{newtxtext,newtxmath}             % Times, the same typeface as the figures
+\usepackage{graphicx,booktabs,multirow,array,xcolor,microtype}
+\usepackage[font=small,labelfont=bf,skip=5pt]{caption}
+\usepackage[compact]{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{placeins}
+\usepackage{capt-of}
+
+\graphicspath{{../figures/}}
+\newcommand{\fig}[2][1]{\includegraphics[width=#1\dimexpr 6.3in\relax]{#2}}   % figure at (a fraction of) its drawn width
+\newcommand{\repourl}{https://github.com/DannyZ061205/ENG2440-A2}
+\setlist{nosep,leftmargin=*}
+\setlength{\emergencystretch}{1.5em}
+\setcounter{topnumber}{3}\setcounter{bottomnumber}{2}\setcounter{totalnumber}{5}
+\renewcommand{\topfraction}{0.9}\renewcommand{\bottomfraction}{0.6}\renewcommand{\textfraction}{0.07}
+\setlength{\textfloatsep}{10pt plus 3pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{12pt plus 2pt minus 2pt}
+\titlespacing*{\section}{0pt}{10pt}{4pt}
+\titlespacing*{\subsection}{0pt}{8pt}{3pt}
+\linespread{1.025}\selectfont
+\setlength{\parskip}{1pt plus 1pt}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Whole-tumour segmentation in multimodal 3D brain MRI}\\[3pt]
+Zichen Zhao (25011189) \quad·\quad ENG 2440 Medical Imaging \& AI in Healthcare, Assignment 2\\[1pt]
+Code and executed notebook: \url{\repourl}
+\end{center}
+
+\noindent\textbf{Summary.} We built a PyTorch pipeline that segments the whole brain tumour in four-channel 3D MRI (MSD
+Task01, 484 BraTS cases, supplied case-level split of 338/73/73). A lightweight 3D U-Net (5.65\,M parameters) is trained on
+$64^3$ patches and applied to whole volumes with an overlapping sliding window. In a controlled comparison over three
+seeds, tumour-aware patch sampling raised validation sensitivity by 0.029 but added 5.3\,mL of false-positive volume and
+did not raise Dice ($-$0.006, 95\% CI $-$0.015 to 0.003), so uniform sampling was kept. On the untouched test split the final
+model reaches a mean Dice of 0.885 (95\% CI 0.869 to 0.899), a median HD95 of 4.9\,mm and a median absolute volume error
+of 10.1\%. Most remaining errors are boundary disagreements a voxel or two wide; the clearest failures are missed small
+lesions and context errors, which no single metric captures. The reference is a research segmentation, so these numbers
+measure agreement with expert outlines, not clinical suitability.
+
+\section{Task and data}
+\textbf{Task.} The input is one patient case of the Medical Segmentation Decathlon (MSD) Task01 BrainTumour data
+\cite{antonelli2022,simpson2019}: four co-registered MRI volumes (FLAIR, T1-weighted, contrast-enhanced T1-weighted (T1ce)
+and T2-weighted), stored as one 4-channel NIfTI array of $240\times240\times155$ voxels. The output is a binary mask on the
+same grid that marks the \emph{whole tumour}. Four units must be kept apart: a \emph{voxel} is one
+$1\times1\times1$\,mm$^3$ cell; a \emph{slice} is one 2D plane of voxels; a \emph{volume} is the 3D array of one channel or
+of the label; and a \emph{patient case} is one patient's four volumes plus their label. Training draws 3D patches from
+volumes, but every metric is computed per case on the whole volume, so the case is the unit of analysis. The intended use
+is technical: a research pipeline that outlines the tumour and measures its volume.
+
+\textbf{What the label means.} The reference comes from the BraTS 2016/2017 challenges \cite{menze2015,bakas2017}, in which
+raters outlined oedema (label 1), non-enhancing tumour (2) and enhancing tumour (3). We map every non-zero label to 1
+and keep the original label files unchanged. The reference is a research segmentation, not pathology-confirmed tumour
+extent, and raters disagree most at the diffuse edge of the oedema. Our scores therefore measure agreement with expert
+outlines; they say nothing about clinical safety or suitability for treatment planning.
+
+\textbf{Data and geometry.} We use the 484 labelled cases with the supplied \texttt{assignment2\_split.csv} unchanged:
+338 training, 73 validation and 73 test cases. Each case is one patient, so the split is by patient, and assertions confirm
+that the three sets of case identifiers are disjoint and that all 968 files exist. The headers of all 484 images and labels agree: the same
+$240\times240\times155$ grid of 1\,mm isotropic voxels, an identity affine with orientation code RAS, and an image affine equal
+to its label affine. The four channels are stored in the order FLAIR, T1, T1ce, T2 (from \texttt{dataset.json}), as
+\texttt{float32}, and the labels as \texttt{uint8} with values $\{0,1,2,3\}$. The median reference tumour volume is 95.5,
+91.6 and 89.1\,mL in the three splits (Appendix Table~\ref{tab:data}, Figure~\ref{fig:split}); the test labels were opened at this point only to count
+voxels.
+
+\textbf{Index order is not anatomy.} Figure~\ref{fig:views} shows one case at one physical point, the tumour's centre of
+mass, converted to millimetres with the affine and back. Panels (f)--(h) lay the planes out with the affine; panels (i) and
+(j) plot raw array slices, as \texttt{imshow(array[:,:,k])} would, and show the brain rotated and on its side. An array
+stored in another orientation (for example LPS) would hold the mirror image with exactly the same index layout. Only the
+affine ties indices to anatomy, so it must be read before a slice is displayed, a flip is used for augmentation, or a
+distance is measured in millimetres. Here the anatomy confirms the header where anatomy can: the cerebellum lies at low
+axis-1 indices (posterior) and the vertex at high axis-2 indices (superior). Left and right cannot be checked in a
+near-symmetric brain.
+
+\begin{figure}[t]
+\centering\fig{A_views.pdf}
+\caption{\textbf{The same voxel index shows the same anatomy in all four channels, but only the affine says which way is
+up or left.} Training case BRATS\_001 at the tumour's centre of mass (voxel (157, 116, 67) = (157, 116, 67)\,mm). (a)--(d)
+Axial FLAIR, T1, T1ce and T2; (e) the original reference labels (three sub-regions). (f)--(h) The binary whole-tumour
+reference (gold outline) in the three planes, radiological convention (patient's right on the viewer's left), letters
+mark anatomical directions. (i), (j) The same data plotted by raw array index. Every panel shows a $192\times192$\,mm field.}
+\label{fig:views}
+\end{figure}
+
+\section{Methods}
+\textbf{Preprocessing.} Because every case shares one grid, no resampling is needed and the target grid is the native
+1\,mm RAS grid. The only spatial steps are a reorientation to RAS (a no-op here) and cropping each case to the bounding box
+of its brain (voxels non-zero in any channel), which keeps 36\% of the volume and discards only empty background; no case
+needed padding to the 64-voxel patch size. The crop box is stored, and every prediction is written back into the full
+grid before it is scored. Interpolation happens only in the rotation augmentation, with linear interpolation for MRI and
+nearest neighbour for labels: on BRATS\_001, a $7^\circ$ rotation with linear interpolation turns the four label values into
+19,191 distinct values such as 1.5, which are not valid classes, whereas nearest neighbour keeps exactly $\{0,1,2,3\}$.
+Each channel of each case is then z-scored with the mean and SD of its non-zero voxels; the zero background, about 83\% of
+the full volume, would otherwise drag the statistics towards 0. Afterwards every channel has brain mean 0.000 and SD 1.000
+in all 484 cases, and the background stays exactly 0. The statistics come from the case itself, so no information passes
+between cases or splits.
+
+\textbf{Augmentation.} Training patches only are augmented, each transform imitating a real variation: a left--right flip
+($p=0.5$; gliomas occur in either hemisphere and a mirrored brain is still plausible, whereas anterior--posterior or
+superior--inferior flips would create impossible anatomy), an axial rotation of up to $\pm10^\circ$ ($p=0.5$; residual head
+tilt), and a per-channel intensity scale of $\times$U(0.9,\,1.1) and shift of U($-$0.1,\,0.1) SD on brain voxels (scanner
+gain left after z-scoring). Appendix Figure~\ref{fig:augment} shows one patch before and after.
+
+\textbf{Patches and samplers.} A PyTorch \texttt{Dataset} returns patches of $[C,D,H,W]=[4,64,64,64]$ with masks
+$[1,64,64,64]$; patch $i$ is drawn with its own random generator seeded by (seed, $i$), so the patch stream is fixed by the
+seed alone. The \emph{uniform} sampler places the patch uniformly where it fits in the cropped volume. The
+\emph{tumour-aware} sampler centres it on a randomly chosen reference tumour voxel with probability 0.5 and otherwise draws it
+uniformly. We chose 64-voxel patches after measuring that, with 96-voxel patches, 99\% of uniform patches already contain
+tumour (the brain box is only about $138\times169\times138$ voxels), which would leave the two samplers nothing to differ on;
+at 64 voxels the share is 78\%.
+
+\textbf{Model and training.} A lightweight 3D U-Net \cite{ronneberger2015,cicek2016} with 4 input channels and 1 output
+channel (a whole-tumour logit) has five levels of 16, 32, 64, 128 and 256 feature channels, two $3\times3\times3$
+convolutions per level with instance normalisation \cite{ulyanov2016} and leaky ReLU, strided convolutions for
+downsampling and transposed convolutions for upsampling: 5,647,681 parameters. The loss is soft Dice \cite{milletari2016}
+plus binary cross-entropy (BCE) over the batch; the optimiser is AdamW \cite{loshchilov2019} (peak learning rate $10^{-3}$,
+weight decay $10^{-5}$, 100 warm-up iterations, then cosine decay to 0); the budget is 3,000 iterations of 4 patches
+(12,000 patches, about 36 per training case). Each sampler is trained with seeds 0, 1 and 2, and for each seed the two
+samplers form a controlled pair: both runs load the same initial-weights file, see the same case sequence and use
+identical settings, and the notebook asserts that their saved
+configurations differ only in the sampler. Every 300 iterations each model predicts all 73 validation cases and 15 fixed
+training cases with the full inference pipeline, and the checkpoint with the best mean validation Dice is kept.
+
+\textbf{Inference and postprocessing.} The cropped volume is covered by $64^3$ windows with stride 32 (50\% overlap), the
+last window on each axis shifted to end at the border. Each window's sigmoid probabilities are weighted by a 3D Gaussian
+($\sigma=8$ voxels) \cite{isensee2021}, summed and divided by the summed weights; only the blended probability is
+thresholded at 0.5. As postprocessing we remove every 26-connected component smaller than $k$\,mL, with $k$ chosen on
+validation; unlike keeping only the largest component, this keeps a second lesion of a multifocal tumour.
+
+\textbf{Metrics.} Per test case we report Dice, intersection over union (IoU), sensitivity, and the 95th-percentile
+Hausdorff distance (HD95), the larger of the two directed 95th-percentile distances between the mask surfaces in
+millimetres \cite{taha2015,maierhein2024}. Volume is the voxel count times the voxel volume from the header (1\,mm$^3$, so
+1,000 voxels = 1\,mL). Means come with 95\% percentile-bootstrap confidence intervals (CIs) over cases (2,000 resamples), and
+paired differences with paired bootstrap CIs. Every choice (sampler, seed, checkpoint, rule, overlap) was made on validation, and the test labels were used
+only for the final evaluation. An earlier execution with seed 0 alone also evaluated its selected model on the test
+split; the two extra seeds had been planned before it, and no setting was changed in response to it.
+
+\section{Results}
+\textbf{Training behaviour.} Both samplers learn steadily and neither overfits within the budget (Figure~\ref{fig:curves}).
+Averaged over three seeds, validation Dice passes 0.80 by iteration 1,500 with uniform sampling and by 2,100 with
+tumour-aware sampling. For the uniform runs, training and validation curves stay close to the end (whole-volume loss 0.179
+versus 0.195 at iteration 3,000), and validation Dice is still rising over the last 600 iterations (0.855 to 0.864) as
+the learning rate decays to zero, which suggests mild underfitting. The tumour-aware runs vary much more between seeds in
+mid-training (validation Dice SD 0.052 at iteration 1,800, against 0.005), which points to less stable optimisation. Their
+patch loss is lower only because their patches hold more tumour, which shrinks the soft-Dice term; on whole volumes, the
+comparable measure, the uniform runs have the lower loss throughout.
+
+\begin{figure}[t]
+\centering\fig{D_curves.pdf}
+\caption{\textbf{Both samplers converge within 3,000 iterations without overfitting; tumour-aware runs are less stable
+between seeds.} (a) Dice + BCE loss and (b) Dice on whole volumes with the full inference pipeline, every 300
+iterations: validation (thick, 73 cases) and training (thin, 15 fixed training cases). (c) Loss on the training patches
+themselves (moving average over 100 iterations), not comparable between samplers. Lines: mean over seeds 0--2; bands:
+lowest to highest seed.}
+\label{fig:curves}
+\end{figure}
+
+\textbf{Uniform versus tumour-aware sampling.} Tumour-aware sampling does what it is designed to do, and that is the
+problem here (Table~\ref{tab:samplers}, Figure~\ref{fig:samplers}). It raises the share of patches that contain tumour
+from 78.1\% to 89.0\% and more than doubles the tumour share of patch voxels (7.1\% to 15.7\%). The network learns this
+inflated prior and, on whole volumes where tumour is again a small share of the brain, calls tumour more readily:
+sensitivity rises by 0.029 (95\% CI 0.021 to 0.038) and missed volume falls by 3.2\,mL, but false-positive volume rises
+by 5.3\,mL (3.3 to 8.0), precision falls by 0.038 and mean HD95 grows by 6.4\,mm, so Dice does not improve ($-$0.006,
+CI $-$0.015 to 0.003). Oversampling pays off when uniform patches rarely contain the target; with whole tumours of
+median 90\,mL and $64^3$ patches, most uniform patches already do, so the benefit is small and the shift in prior
+dominates. Pushed further, the network would almost never see the hard negatives far from the tumour (bright FLAIR from
+other causes, vessels, the brain's edge) and would produce false positives exactly there, which is why moderate rates,
+such as nnU-Net's one in three \cite{isensee2021}, are the norm.
+
+\begin{table}[t]
+\centering\small
+\caption{\textbf{Tumour-aware sampling trades false positives for sensitivity and does not raise Dice.} Validation, 73
+cases, best checkpoint of each run. Columns 2--3: mean $\pm$ SD over seeds 0--2 of the case-mean. Difference:
+tumour-aware $-$ uniform, paired over cases after averaging each case over seeds, with a 95\% percentile-bootstrap CI
+(2,000 resamples). Patch statistics over all 12,000 training patches of each run.}
+\label{tab:samplers}
+\input{tables/samplers.tex}
+\end{table}
+
+\begin{figure}[t]
+\centering\fig{E_comparison.pdf}
+\caption{\textbf{Per case, tumour-aware sampling raises sensitivity but adds false-positive volume.} Validation, 73
+cases, each case averaged over seeds 0--2; dots are cases (grey lines join the same case), bars are medians; $\Delta$:
+mean paired difference (tumour-aware $-$ uniform) with its 95\% bootstrap CI. False-positive volume on a log scale,
+values below 0.3\,mL drawn at 0.3.}
+\label{fig:samplers}
+\end{figure}
+
+\textbf{Final configuration.} By the rule fixed beforehand (higher mean validation Dice over seeds, 0.865 against
+0.858), the uniform sampler is selected, and within it seed 2, whose checkpoint has the best validation Dice (0.870). On
+validation, removing connected components smaller than $k$ raises mean Dice steadily up to the largest value of the grid,
+$k = 5$\,mL (0.870 to 0.873), and lowers mean HD95 from 14.5 to 10.8\,mm, whereas keeping only the largest component
+lowers Dice and sensitivity because it deletes true second lesions. As the optimum lies at the edge of the grid, a
+larger $k$ might score higher; we did not extend the grid after seeing test results.
+
+\textbf{Test performance.} On the untouched test split the final model reaches a mean Dice of 0.885 (95\% CI 0.869 to
+0.899; median 0.901) after postprocessing, with a median HD95 of 4.9\,mm and no empty predictions (Table~\ref{tab:test}).
+The rule changes the prediction of 59 of the 73 cases but barely moves the summary: Dice rises by 0.0023 (CI 0.0004 to
+0.0052), while HD95 changes by +0.47\,mm (CI $-$0.62 to 1.87), so its validation gain in HD95 does not carry over. Its
+cost is hidden in the average: 67 of the 310 removed components overlapped the reference. Volumes agree closely over
+the whole range (Appendix Figure~\ref{fig:volumes}): the mean signed error is $-$1.1\%, so there is no systematic bias,
+but single cases spread from $-$33.4\% to +31.2\% (95\% limits of agreement), with a median absolute error of 10.1\%.
+
+\begin{table}[t]
+\centering\small
+\caption{\textbf{The final model reaches a test Dice of 0.885; postprocessing changes the summary little.} Test split,
+73 cases, final model (uniform sampler, seed 2); mean $\pm$ SD and median over cases; 95\% percentile-bootstrap CI of the
+mean (2,000 resamples). HD95: 95th-percentile symmetric surface distance. Volume error: predicted $-$ reference volume.}
+\label{tab:test}
+\input{tables/test.tex}
+\end{table}
+
+\textbf{Where the errors are.} Most errors are disagreements about the boundary. Across the test cases the median share
+of error voxels within 2\,mm of the reference surface is 92\%, and in the best case the errors form a one-voxel rim
+around a correct tumour (Figure~\ref{fig:errors}a), where oedema fades into normal tissue and the reference itself is
+least certain. Small structures are the second failure: of 480 reference components smaller than 1\,mL, the prediction
+touches only 9\%, and postprocessing can turn partly detected small lesions into missed ones. In BRATS\_253 the model
+touched three satellite lesions, 60 to 82\,mm from the main tumour, only with tiny fragments (0.2\,mL, half of it true
+positive); the rule deleted them, Dice barely changed (0.902 to 0.903), but HD95 rose from 19.4 to 56.9\,mm. In the
+median case (Figure~\ref{fig:errors}b) every false positive is attached to the tumour (23.3\,mL along its border), and
+most of the 12.1\,mL it misses lies where the tumour extends across the midline. The worst case is a patch-context
+failure (Figure~\ref{fig:errors}c): its coronal and sagittal planes are smeared, consistent with thick original slices,
+and the prediction grows from the true lesion into the posterior fossa as one connected region, adding 53.3\,mL of false
+positives while missing 25.0\,mL of the lesion. A $64^3$ patch sees only local texture; where that texture looks abnormal
+for other reasons, nothing in the patch tells the network where the tumour ends.
+
+\begin{figure}[t]
+\centering\fig{G_errors.pdf}
+\caption{\textbf{Errors are mostly thin boundary rims; the median case under-calls the part of the tumour that crosses the
+midline, and the worst case's false positives spread into the posterior fossa.} Test cases with the highest, median and lowest Dice
+(chosen by rule), final model after postprocessing, on FLAIR. Columns 1--3: planes through the centre of mass of
+reference $\cup$ prediction, radiological convention, same field of view and scale (bar: 5\,cm). Column 4: all axial
+slices projected onto one image (each pixel coloured by the more frequent error type along its column).}
+\label{fig:errors}
+\end{figure}
+
+\textbf{One metric is not enough.} The cases rank differently on each metric. The median case's HD95 (9.8\,mm) is only 1.6\,mm
+smaller than the worst case's (11.4\,mm) although its Dice is 0.30 higher, because HD95 reports the farthest 5\% of
+boundary errors and both cases have errors about a centimetre out. Volume error separates them more (+6.4\% against
++33.2\%) but hides compensating mistakes: missing 25\,mL and adding 25\,mL scores 0\%. BRATS\_253 has a Dice near the
+median (0.903) but an HD95 of 56.9\,mm, seven times the test mean of 7.7\,mm, because a few missed millilitres far away
+barely affect overlap but dominate boundary distance. Over all
+test cases, Dice correlates only moderately with HD95 and with absolute volume error (Spearman $-$0.74 and $-$0.73), and
+HD95 with volume error weakly (0.52). Overlap, boundary distance and volume answer different questions (how much agrees,
+how far the worst errors reach, how wrong a volume measurement would be), so a report needs all three.
+
+\textbf{Bonus: missing modalities.} Without retraining, replacing FLAIR by zeros collapses the model (mean test Dice
+0.087; 48 of 73 predictions empty), whereas zeroing T2, T1 or T1ce costs 0.096, 0.062 and 0.028 Dice
+(Appendix Table~\ref{tab:bonus}). Whole tumour is mostly oedema, which FLAIR shows best, and the network relies on it
+almost entirely. Zeroing is an imperfect stand-in for a missing acquisition: after z-scoring, 0 is the brain's mean, so
+the channel becomes a flat image the network never saw, whereas a real missing scan is absent, replaced by another
+sequence or degraded. Training with random modality dropout and an availability mask, or with per-modality encoders
+fused by an order-free operation, would let the network cope with any subset.
+
+\textbf{Bonus: sliding-window seams.} On validation, Dice rises from 0.850 (0\% overlap, about 26 windows per case) to
+0.862 (25\%) and 0.873 (50\%, about 77 windows), while the run time grows from 0.33 to 0.88\,s per case. When the 0\% and 50\% predictions are
+compared, labels change for 10.9\% of compared voxels within four voxels of a window border but for
+1.7\% sixteen or more voxels away (Appendix Figure~\ref{fig:seams}): border voxels see the tumour cut off by
+the patch edge, and overlap lets a window in which they lie near the centre dominate. Choosing the overlap by repeatedly
+checking test Dice would turn the test set into a second validation set and bias the reported score upwards; we fixed
+50\% on validation.
+
+\section{Discussion and limitations}
+The pipeline reaches a whole-tumour test Dice of 0.885 with a lightweight network and a short budget, and the
+controlled comparison over three seeds shows that, at this patch size and tumour size, tumour-aware sampling shifts
+errors from misses to false positives without improving overlap. Five limitations bound these conclusions.
+\emph{Small training budget:} each run saw 12,000 patches on one laptop GPU and validation Dice was still rising, so
+absolute numbers understate what the architecture can reach; a longer schedule and a larger patch would test whether
+the sampler ranking holds. \emph{No external-site validation:} all cases come from one curated benchmark with shared
+skull stripping, co-registration and resampling; raw scans from another hospital or protocol may perform worse, and
+only a held-out site would tell. \emph{Reference, not truth:} each case has one research segmentation, and raters
+disagree most at the oedema edge, exactly where most of our errors lie. \emph{Three seeds, one split:} confidence
+intervals cover case sampling, not re-splitting. \emph{Whole tumour only, and a Dice-tuned rule:} the clinically
+important sub-regions were not modelled, and choosing postprocessing on Dice alone removed small true lesions; a rule
+chosen jointly on Dice and lesion-wise detection would be safer.
+
+\section{Conclusion}
+A patch-trained 3D U-Net with careful geometry handling, whole-volume sliding-window inference and validation-only
+choices segments the whole tumour with a test Dice of 0.885 and a median HD95 of 4.9\,mm. Tumour-aware sampling did not
+help here, and the error analysis shows why single metrics mislead: the remaining errors are boundary rims, missed small
+lesions and context failures, which Dice, HD95 and volume error each see differently.
+
+\medskip\noindent\textbf{Acknowledgements and AI use.} Data: MSD Task01 \cite{simpson2019,antonelli2022}, from BraTS \cite{menze2015,bakas2017}. Software: PyTorch \cite{paszke2019}, NiBabel \cite{nibabel}; figures use the \emph{paper-figure} style code \cite{paperfigure}. AI use is disclosed in \texttt{ai\_use\_declaration.txt} in the repository.
+
+\clearpage
+\begin{thebibliography}{99}\small
+\bibitem{antonelli2022} M. Antonelli et al. The Medical Segmentation Decathlon. \emph{Nature Communications}, 13:4128, 2022. doi:10.1038/s41467-022-30695-9
+\bibitem{simpson2019} A. L. Simpson et al. A large annotated medical image dataset for the development and evaluation of segmentation algorithms. arXiv:1902.09063, 2019.
+\bibitem{menze2015} B. H. Menze et al. The Multimodal Brain Tumor Image Segmentation Benchmark (BRATS). \emph{IEEE Transactions on Medical Imaging}, 34(10):1993--2024, 2015. doi:10.1109/TMI.2014.2377694
+\bibitem{bakas2017} S. Bakas, H. Akbari, A. Sotiras, M. Bilello, M. Rozycki, J. S. Kirby, J. B. Freymann, K. Farahani, C. Davatzikos. Advancing The Cancer Genome Atlas glioma MRI collections with expert segmentation labels and radiomic features. \emph{Scientific Data}, 4:170117, 2017. doi:10.1038/sdata.2017.117
+\bibitem{ronneberger2015} O. Ronneberger, P. Fischer, T. Brox. U-Net: Convolutional networks for biomedical image segmentation. In \emph{MICCAI 2015}, LNCS 9351, pages 234--241. Springer, 2015. doi:10.1007/978-3-319-24574-4\_28
+\bibitem{cicek2016} \"O. \c{C}i\c{c}ek, A. Abdulkadir, S. S. Lienkamp, T. Brox, O. Ronneberger. 3D U-Net: Learning dense volumetric segmentation from sparse annotation. In \emph{MICCAI 2016}, LNCS 9901, pages 424--432. Springer, 2016. doi:10.1007/978-3-319-46723-8\_49
+\bibitem{ulyanov2016} D. Ulyanov, A. Vedaldi, V. Lempitsky. Instance normalization: The missing ingredient for fast stylization. arXiv:1607.08022, 2016.
+\bibitem{milletari2016} F. Milletari, N. Navab, S.-A. Ahmadi. V-Net: Fully convolutional neural networks for volumetric medical image segmentation. In \emph{2016 Fourth International Conference on 3D Vision (3DV)}, pages 565--571. IEEE, 2016. doi:10.1109/3DV.2016.79
+\bibitem{loshchilov2019} I. Loshchilov, F. Hutter. Decoupled weight decay regularization. In \emph{ICLR}, 2019. arXiv:1711.05101
+\bibitem{isensee2021} F. Isensee, P. F. Jaeger, S. A. A. Kohl, J. Petersen, K. H. Maier-Hein. nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. \emph{Nature Methods}, 18(2):203--211, 2021. doi:10.1038/s41592-020-01008-z
+\bibitem{taha2015} A. A. Taha, A. Hanbury. Metrics for evaluating 3D medical image segmentation: analysis, selection, and tool. \emph{BMC Medical Imaging}, 15:29, 2015. doi:10.1186/s12880-015-0068-x
+\bibitem{maierhein2024} L. Maier-Hein, A. Reinke, et al. Metrics reloaded: recommendations for image analysis validation. \emph{Nature Methods}, 21(2):195--212, 2024. doi:10.1038/s41592-023-02151-z
+\bibitem{paszke2019} A. Paszke et al. PyTorch: An imperative style, high-performance deep learning library. In \emph{Advances in Neural Information Processing Systems 32}, 2019.
+\bibitem{nibabel} C. J. Markiewicz, M. Brett, et al. NiBabel (software, version 5.4.2). Zenodo, 2026. doi:10.5281/zenodo.591597
+\bibitem{paperfigure} \emph{paper-figure} figure-style skill (supplied as a Claude Code skill); its Appendix A plotting code is reused in \texttt{helpers/paper\_plot\_style.py}.
+\end{thebibliography}
+
+
+\clearpage
+\appendix
+\section*{Appendix}
+\noindent\begin{minipage}{\textwidth}
+\centering\fig{C_augmentation.pdf}
+\captionof{figure}{\textbf{Augmentation changes position and intensity but keeps image and label aligned.} One training
+patch (rule: first uniform patch with both a flip and a rotation whose middle slice shows tumour and the brain's edge)
+without (a, b) and with (d, e) augmentation; gold: reference whole tumour, transformed with nearest-neighbour
+interpolation. (c) FLAIR intensities of the brain voxels in the patch.}
+\label{fig:augment}
+\end{minipage}
+
+\bigskip\noindent\begin{minipage}{\textwidth}
+\centering\fig{F_volumes.pdf}
+\captionof{figure}{\textbf{Predicted volumes match the reference without bias but with a wide spread for single cases.}
+Test split, 73 cases, final model after postprocessing. (a) Predicted against reference volume. (b) Bland--Altman plot:
+volume error as a percentage of the reference volume; solid line: mean (bias), dashed: bias $\pm$ 1.96 SD. Rings: the
+cases of Figure~\ref{fig:errors}.}
+\label{fig:volumes}
+\end{minipage}
+
+\bigskip\noindent\begin{minipage}{\textwidth}
+\centering\footnotesize
+\captionof{table}{\textbf{Bonus tests.} Top: test split, 73 cases, one channel replaced by zeros at test time (final
+model, postprocessed); $\Delta$Dice paired with the four-channel result. Bottom: window overlap, final model,
+postprocessed; s/case: inference time per case on an Apple M4 Max GPU.}
+\label{tab:bonus}
+\input{tables/missing.tex}\\[4pt]
+\input{tables/seams.tex}
+\end{minipage}
+
+\bigskip\noindent\begin{minipage}{\textwidth}
+\centering\footnotesize
+\captionof{table}{\textbf{The three splits have similar tumour volumes.} Reference whole-tumour volume per split (voxel
+count $\times$ 1\,mm$^3$); IQR: interquartile range. Test labels were read only to count voxels.}
+\label{tab:data}
+\input{tables/data.tex}\\[6pt]
+\fig{B_volumes.pdf}
+\captionof{figure}{\textbf{Tumour volume distributions overlap across splits.} Dots: cases; black bar: interquartile
+range; red tick: median.}
+\label{fig:split}
+\end{minipage}
+
+\bigskip\noindent\begin{minipage}{\textwidth}
+\centering\fig{X2_seams.pdf}
+\captionof{figure}{\textbf{Overlap helps most at window borders.} (a) Validation Dice against inference time for 0, 25 and
+50\% overlap. (b) Share of voxels whose label differs between 0\% and 50\% overlap, by distance to the nearest window
+border of the 0\% grid (validation; voxels where either map has $p \ge 0.05$). (c) $|\Delta p|$ between the two maps
+on one validation case, with the 0\% window borders (dashed).}
+\label{fig:seams}
+\end{minipage}
+
+\end{document}

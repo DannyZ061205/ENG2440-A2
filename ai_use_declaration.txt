@@ -1,0 +1,33 @@
+AI-USE DECLARATION: ENG2440 Assignment 2
+Zichen Zhao (25011189)
+
+Tool:
+  Claude Code (Anthropic), model Claude Opus 5.5, used as a coding and writing assistant.
+
+How it was used:
+  * Code and experiments: it cowrote the notebook code and the helper modules (helpers/), and ran the experiments on my laptop.
+  * Knowledge and syntax: it explained library syntax, concepts and the overall experimental pipeline where I did not know them.
+  * Report: it codrafted the report (gave a the correct structure to build on top of it) from the notebook results and revised it for language, logic and flow at my request. A second Claude instance proofread it and checked its numbers, and potential improvements. 
+  * Figures: it gave me ideas for designs and helped me polished the figures allowing for better clarity, following a figure-style guide I supplied as my standards. 
+  * Review: it checked the notebook and report against every requirement of the brief.
+
+My role:
+  I directed the work and made the decisions, reviewed every version, rewrote parts of the notebook text myself, and made sure I can explain and reproduce every result. I made sure all the figures are clear and convey clearly what they are trying to convey. 
+
+Parts of the submission affected:
+  25011189_ENG2440_A2.ipynb, helpers/*.py, README.md, and the report (report/main.tex and the PDF).
+
+Data:
+  No dataset files were uploaded. The tool saw code outputs (including a few rows of the label tables) and the rendered figures, some of which contain radiographs.
+
+Summary of my requests:
+  * Gave it a prompt of my requirements and asked it to plan the work in stages, build the pipeline and structure of the notebook.
+  * Supplied a figure-style guide and asked it to polish every figure; later asked for a new color palette and
+    chose one of its proposals.
+  * Asked a lot of conceptual questions relating to medical imaging so that I could understand from the doctor's perspective how this could be beneficial. 
+  * Asked a lot of questions relating library syntax questions.
+  * Asked it to debug my code and how it could be optimized. 
+  * Asked it to confirm that the notebook runs from start to finish and meets every requirement, to add comments
+    to the code, and make the code more structured. 
+  * Asked questions to better understand the project
+  * After approving the results, asked it advices for the report (how it should be structured, how to improve the diction and flow to make to more comprehensible).

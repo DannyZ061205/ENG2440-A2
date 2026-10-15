@@ -1,0 +1,5 @@
+{
+  "tumour": {"label": "Tumour-aware sampler", "role": "focus"},
+  "uniform": {"label": "Uniform sampler", "role": "baseline", "color": "#16425B", "marker": "s", "linestyle": "--"},
+  "tumour_pp": {"label": "Tumour-aware + postprocessing", "role": "baseline", "color": "#8C1C13", "marker": "v", "linestyle": "-"}
+}
